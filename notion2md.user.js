@@ -3,6 +3,7 @@
 // @namespace    https://github.com/Hon-Lu/notion2md-userscript
 // @version      0.0.0
 // @author       Hon.Lu
+// @license      MIT
 // @description  將目前 Notion 頁面匯出為 Markdown（含圖片）
 // @homepageURL  https://github.com/Hon-Lu/notion2md-userscript
 // @supportURL   https://github.com/Hon-Lu/notion2md-userscript/issues
