@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         notion2md
 // @namespace    https://github.com/Hon-Lu/notion2md-userscript
-// @version      0.0.0
+// @version      0.1.0
 // @author       Hon.Lu
 // @license      MIT
-// @description  將目前 Notion 頁面匯出為 Markdown（含圖片）
+// @description  Export the current Notion page to Markdown with images
 // @homepageURL  https://github.com/Hon-Lu/notion2md-userscript
 // @supportURL   https://github.com/Hon-Lu/notion2md-userscript/issues
 // @downloadURL  https://github.com/Hon-Lu/notion2md-userscript/releases/latest/download/notion2md.user.js
@@ -21,6 +21,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @connect      self
 // @connect      *
 // ==/UserScript==
@@ -28,7 +30,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '0.0.0';
+  const VERSION = '0.1.0';
 
   // No @require, remote scripts, remote services, or Notion internal APIs.
   // @connect * is needed ONLY for GET requests to image URLs already present in the page.
@@ -45,16 +47,180 @@
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'avif', 'svg']);
   let running = false;
 
+  // Chinese browser languages (Traditional or Simplified) use zh-Hant; all others use English.
+  const MESSAGES = Object.freeze({
+    en: {
+      untitledPage: 'Notion page',
+      image: 'Image',
+      toggle: 'Toggle',
+      pageLink: 'Page link',
+      mermaidDiagram: 'Mermaid diagram',
+      embeddedMermaidDiagram: 'Embedded Mermaid diagram',
+      mdCollapsedToggle: '> [!WARNING] This block was collapsed during export; its contents may be missing.',
+      mdTableUnreadable: '> [!WARNING] This Notion table could not be converted reliably. Check the original page.',
+      mdMermaidAsSvg: '> [!NOTE] This Mermaid diagram is kept as SVG.',
+      mdMermaidUnreadable: '> [!WARNING] This Mermaid diagram could not be read. Switch it to Code or Split view in Notion and try again.',
+      mdCodeUnreadable: '> [!WARNING] This code block could not be read.',
+      mdImageMissing: '> [!WARNING] Image missing.',
+      mdLinkedDatabase: '> [!NOTE] Linked database: {link} (rows not exported)',
+      mdEmbedNotDownloaded: '> [!NOTE] Embedded content was not downloaded. See the original Notion page.',
+      mdMermaidPreviewNotSaved: '> [!WARNING] A Mermaid preview was found, but its SVG could not be saved.',
+      mdMediaNotDownloaded: '> [!NOTE] {type} content was not downloaded. See the original Notion page.',
+      mdUnsupportedBlock: '> [!WARNING] Unsupported Notion block ({type}): {text}',
+      errorNoContentRoot: 'Could not find the page content (.notion-page-content). Make sure the page has finished loading.',
+      errorMultipleContentRoots: 'Found more than one Notion content area. Close side peeks, pop-ups or split views and try again, so the wrong page is not exported.',
+      errorScrollStuck: 'The Notion scroll container did not move as expected, so the page could not be confirmed as fully loaded.',
+      errorNoBlocks: 'No exportable Notion blocks were found. Export stopped to avoid an empty file.',
+      errorScrollLimit: 'Scanning exceeded the {limit}-scroll limit, so the content could not be confirmed complete. Export stopped.',
+      errorImageHttp: 'Could not read the image: HTTP {status}',
+      errorNoXhr: 'The userscript manager did not grant GM_xmlhttpRequest.',
+      errorNotArrayBuffer: 'The downloaded data is not an ArrayBuffer',
+      errorTimeout: 'Connection timed out',
+      errorNetwork: 'Network or permission error (check the domain permissions in your userscript manager)',
+      errorAborted: 'The image download was cancelled',
+      errorSvg: 'Could not serialize the Mermaid SVG',
+      errorTooManyImages: 'This page has more than {limit} images and diagrams, which exceeds the safety limit. No ZIP was created.',
+      errorImageNoSource: 'Image {index}/{total} has no recognizable source. Export cancelled, so no ZIP with missing images is created.',
+      errorImageEmpty: 'The image file is empty',
+      errorImageTooLarge: 'The image exceeds the 32 MiB limit',
+      errorNotImage: 'The response is not a recognizable image format',
+      errorImageFailed: 'Image {index}/{total} failed to download: {reason}. Export cancelled.',
+      errorUnknown: 'Unknown error',
+      errorAssetTooLarge: 'An image or diagram exceeds the 32 MiB limit. No ZIP was created.',
+      errorArchiveTooLarge: 'The images exceed the 240 MiB total limit. No ZIP was created.',
+      errorZipEntries: 'Too many files for the ZIP32 format.',
+      errorZipEntryTooLarge: 'A file exceeds the ZIP32 4 GiB limit.',
+      errorZipTooLarge: 'The ZIP exceeds the ZIP32 4 GiB limit.',
+      errorMermaidUnavailable: '{count} Mermaid diagram(s) have no readable source or SVG preview. Switch them to Code or Split view in Notion and export again.',
+      errorEmptyMarkdown: 'The Markdown content is empty. Export cancelled.',
+      confirmPartial: 'Some content may not export completely. Continue anyway?',
+      statusPreparing: 'Preparing export…',
+      statusReading: 'Reading the page…',
+      statusChecking: 'Checking content…',
+      statusSavingImage: 'Saving image {index}/{total}…',
+      statusSavingDiagram: 'Saving diagram {index}/{total}…',
+      statusZipping: 'Packing ZIP…',
+      statusDownloaded: 'ZIP download started',
+      statusCancelled: 'Cancelled',
+      statusFailed: 'Export failed: {message}',
+      exportLabel: 'Export this Notion page as Markdown with images',
+      retryLabel: 'Retry exporting this Notion page',
+      tooltip: 'Click to export · Drag to move · Right-click for settings',
+      settings: 'Settings',
+      close: 'Close',
+      language: 'Language',
+      languageAuto: 'Automatic',
+      languageAutoHint: 'Follows your browser · {language}',
+    },
+    'zh-Hant': {
+      untitledPage: 'Notion 頁面',
+      image: '圖片',
+      toggle: '收合區塊',
+      pageLink: '頁面連結',
+      mermaidDiagram: 'Mermaid 流程圖',
+      embeddedMermaidDiagram: '嵌入的 Mermaid 圖表',
+      mdCollapsedToggle: '> [!WARNING] 此區塊在匯出時為收合狀態，子內容可能未包含。',
+      mdTableUnreadable: '> [!WARNING] 此 Notion 表格無法可靠轉換，請回原頁面確認。',
+      mdMermaidAsSvg: '> [!NOTE] Mermaid 圖表將以 SVG 保留。',
+      mdMermaidUnreadable: '> [!WARNING] Mermaid 流程圖無法讀取，請回 Notion 改為 Code 或 Split 檢視後重試。',
+      mdCodeUnreadable: '> [!WARNING] 程式碼區塊無法讀取。',
+      mdImageMissing: '> [!WARNING] 圖片遺失。',
+      mdLinkedDatabase: '> [!NOTE] 內嵌資料庫：{link}（未匯出資料列）',
+      mdEmbedNotDownloaded: '> [!NOTE] 嵌入內容未下載，請參考 Notion 原頁。',
+      mdMermaidPreviewNotSaved: '> [!WARNING] 已偵測 Mermaid 預覽，但無法保存 SVG。',
+      mdMediaNotDownloaded: '> [!NOTE] {type} 內容未下載，請參考 Notion 原頁。',
+      mdUnsupportedBlock: '> [!WARNING] 未支援的 Notion 區塊（{type}）：{text}',
+      errorNoContentRoot: '找不到目前 Notion 頁面的正文容器（.notion-page-content）。請確認頁面已載入。',
+      errorMultipleContentRoots: '偵測到多個 Notion 正文容器。請先關閉側邊預覽、彈出視窗或多頁分割後重試，避免匯錯頁面。',
+      errorScrollStuck: 'Notion 捲動容器沒有按預期移動，無法確認正文是否已完整載入。',
+      errorNoBlocks: '正文容器內沒有辨識到可匯出的 Notion 區塊。為避免匯出空檔案，已停止。',
+      errorScrollLimit: '頁面掃描超過 {limit} 次捲動上限，無法確定內容完整，已停止匯出。',
+      errorImageHttp: '讀取圖片失敗：HTTP {status}',
+      errorNoXhr: 'Userscript 管理器未提供 GM_xmlhttpRequest 權限。',
+      errorNotArrayBuffer: '下載資料不是 ArrayBuffer',
+      errorTimeout: '連線逾時',
+      errorNetwork: '網路或權限錯誤（請檢查腳本管理器的網域許可）',
+      errorAborted: '圖片下載被取消',
+      errorSvg: 'Mermaid SVG 內容無法序列化',
+      errorTooManyImages: '本頁圖片與流程圖總數超過 {limit} 個的保護上限，未建立 ZIP。',
+      errorImageNoSource: '圖片 {index}/{total} 無法辨識來源。已取消匯出，不會產生缺圖 ZIP。',
+      errorImageEmpty: '圖片為空檔案',
+      errorImageTooLarge: '單張圖片超過 32 MiB 上限',
+      errorNotImage: '回應內容不是可辨識的圖片格式',
+      errorImageFailed: '圖片 {index}/{total} 下載失敗：{reason}。已取消匯出。',
+      errorUnknown: '未知錯誤',
+      errorAssetTooLarge: '單張圖片或流程圖超過 32 MiB 上限，未建立 ZIP。',
+      errorArchiveTooLarge: '圖片總大小超過 240 MiB 的保護上限，未建立 ZIP。',
+      errorZipEntries: 'ZIP 檔案數量超出 ZIP32 限制。',
+      errorZipEntryTooLarge: '檔案超過 ZIP32 4 GiB 限制。',
+      errorZipTooLarge: 'ZIP 超過 ZIP32 4 GiB 限制。',
+      errorMermaidUnavailable: '有 {count} 個 Mermaid 流程圖沒有可取得的原始碼或 SVG 預覽。請在 Notion 切換為 Code 或 Split 檢視後再匯出，避免遺漏流程圖。',
+      errorEmptyMarkdown: 'Markdown 內容為空，已取消匯出。',
+      confirmPartial: '部分內容可能無法完整匯出，仍要繼續嗎？',
+      statusPreparing: '正在準備匯出…',
+      statusReading: '正在讀取頁面…',
+      statusChecking: '正在檢查內容…',
+      statusSavingImage: '儲存圖片 {index}/{total}…',
+      statusSavingDiagram: '儲存流程圖 {index}/{total}…',
+      statusZipping: '正在打包 ZIP…',
+      statusDownloaded: 'ZIP 已開始下載',
+      statusCancelled: '已取消',
+      statusFailed: '匯出失敗：{message}',
+      exportLabel: '匯出目前 Notion 頁面為 Markdown 與圖片 ZIP',
+      retryLabel: '重試匯出目前 Notion 頁面',
+      tooltip: '點擊匯出 · 拖曳移動 · 右鍵開啟設定',
+      settings: '設定',
+      close: '關閉',
+      language: '語言',
+      languageAuto: '自動',
+      languageAutoHint: '跟隨瀏覽器 · {language}',
+    },
+  });
+  const LANGUAGE_NAMES = Object.freeze({ en: 'English', 'zh-Hant': '繁體中文' });
+  const LANGUAGE_PREFERENCES = ['auto', 'en', 'zh-Hant'];
+  const LANGUAGE_KEY = 'n2z.language.v1';
+
+  // Userscript storage is shared across Notion origins; localStorage is the fallback.
+  function readStored(key, parse) {
+    try {
+      if (typeof GM_getValue === 'function') {
+        const stored = parse(GM_getValue(key, null));
+        if (stored) return stored;
+      }
+    } catch (_) { /* Userscript storage may be unavailable in offline tests. */ }
+    try { return parse(localStorage.getItem(key)); }
+    catch (_) { return null; }
+  }
+
+  function writeStored(key, raw) {
+    try { if (typeof GM_setValue === 'function') GM_setValue(key, raw); }
+    catch (_) { /* Fall back to localStorage below. */ }
+    try { localStorage.setItem(key, raw); }
+    catch (_) { /* Private mode may prevent storage; the current page still works. */ }
+  }
+
+  const parseLanguagePreference = raw => LANGUAGE_PREFERENCES.includes(raw) ? raw : null;
+  const browserLanguage = () =>
+    /^zh\b/i.test(navigator.languages?.[0] || navigator.language || '') ? 'zh-Hant' : 'en';
+  const resolveLanguage = preference => preference === 'auto' ? browserLanguage() : preference;
+  let languagePreference = readStored(LANGUAGE_KEY, parseLanguagePreference) || 'auto';
+  let language = resolveLanguage(languagePreference);
+
+  function t(key, values = {}) {
+    const template = MESSAGES[language][key] ?? MESSAGES.en[key] ?? key;
+    return template.replace(/\{(\w+)\}/g, (match, name) => name in values ? String(values[name]) : match);
+  }
+
   const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
   const isHttp = (url) => /^https?:\/\//i.test(url);
 
   function safeFilename(name) {
-    const sanitized = String(name || 'Notion 頁面')
+    const sanitized = String(name || t('untitledPage'))
       .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
       .replace(/[\s.]+$/g, '')
       .trim()
       .slice(0, 110);
-    const result = sanitized || 'Notion 頁面';
+    const result = sanitized || t('untitledPage');
     return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(result) ? `_${result}` : result;
   }
 
@@ -63,7 +229,7 @@
       .replace(/^\(\d+\)\s*/, '')
       .replace(/\s*[|–-]\s*Notion\s*$/i, '')
       .trim();
-    return raw || document.querySelector('.notion-page-block h1, .notion-page-title')?.textContent?.trim() || 'Notion 頁面';
+    return raw || document.querySelector('.notion-page-block h1, .notion-page-title')?.textContent?.trim() || t('untitledPage');
   }
 
   function isBlock(element) {
@@ -88,9 +254,9 @@
     const roots = [...document.querySelectorAll('.notion-page-content')]
       .filter(isVisible)
       .filter(root => !root.parentElement?.closest('.notion-page-content'));
-    if (!roots.length) throw new Error('找不到目前 Notion 頁面的正文容器（.notion-page-content）。請確認頁面已載入。');
+    if (!roots.length) throw new Error(t('errorNoContentRoot'));
     if (roots.length > 1) {
-      throw new Error('偵測到多個 Notion 正文容器。請先關閉側邊預覽、彈出視窗或多頁分割後重試，避免匯錯頁面。');
+      throw new Error(t('errorMultipleContentRoots'));
     }
     return roots[0];
   }
@@ -143,7 +309,7 @@
       }
     }
     const captionNode = element.querySelector('[class*="image-caption"], figcaption');
-    const alt = captionNode?.textContent?.trim() || images[0]?.alt?.trim() || '圖片';
+    const alt = captionNode?.textContent?.trim() || images[0]?.alt?.trim() || t('image');
     // Prefer HTTP asset URLs to tiny data-URI placeholders.
     choices.sort((a, b) => Number(isHttp(b)) - Number(isHttp(a)));
     return { candidates: choices, alt };
@@ -339,7 +505,7 @@
       await sleep(150);
       for (let step = 0; step < LIMITS.scrollSteps; step++) {
         snapshotBlocks(root, collected);
-        if (step % 5 === 0) status(`掃描正文：${collected.size} 個區塊…`);
+        if (step % 5 === 0) status(t('statusReading'));
         const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         const top = scrollPosition(scroller);
         if (top >= maxTop - 3) {
@@ -353,7 +519,7 @@
         }
         const nextTop = Math.min(maxTop, top + Math.max(260, Math.floor(scroller.clientHeight * 0.70)));
         if (nextTop <= top + 1 || Math.abs(top - lastTop) < 1) {
-          if (top < maxTop - 3) throw new Error('Notion 捲動容器沒有按預期移動，無法確認正文是否已完整載入。');
+          if (top < maxTop - 3) throw new Error(t('errorScrollStuck'));
           hitLimit = false;
           break;
         }
@@ -364,8 +530,8 @@
     } finally {
       setScroll(scroller, savedScroll);
     }
-    if (!collected.size) throw new Error('正文容器內沒有辨識到可匯出的 Notion 區塊。為避免匯出空檔案，已停止。');
-    if (hitLimit) throw new Error(`頁面掃描超過 ${LIMITS.scrollSteps} 次捲動上限，無法確定內容完整，已停止匯出。`);
+    if (!collected.size) throw new Error(t('errorNoBlocks'));
+    if (hitLimit) throw new Error(t('errorScrollLimit', { limit: LIMITS.scrollSteps }));
     return [...collected.values()].sort((a, b) => a.order - b.order);
   }
 
@@ -605,11 +771,11 @@
       matrix = [...rowNodes].map(row => getTableCells({ own: row })).filter(row => row.length);
     }
     if (!matrix.length) {
-      warnings.push('有一個表格無法辨識欄位，已保留缺失標記。');
-      return '> [!WARNING] 此 Notion 表格無法可靠轉換，請回原頁面確認。';
+      warnings.push('A table has no recognizable columns; a placeholder was kept.');
+      return t('mdTableUnreadable');
     }
     const width = Math.max(...matrix.map(row => row.length));
-    if (matrix.some(row => row.length !== width)) warnings.push('表格有不等長的資料列，已補空欄位。');
+    if (matrix.some(row => row.length !== width)) warnings.push('A table has rows of different lengths; empty cells were added.');
     const cell = value => value || ''; // getRich() already escapes Markdown pipes.
     const line = row => `| ${Array.from({ length: width }, (_, i) => cell(row[i])).join(' | ')} |`;
     // Empty header avoids falsely treating the first Notion row as a header.
@@ -641,6 +807,9 @@
     return `${fence}${String(language || '').replace(/[^\w+#.-]/g, '')}\n${source}\n${fence}`;
   }
 
+  // Expected during the preflight render, before image paths are assigned.
+  const MISSING_IMAGE_PATH_WARNING = 'An image has no file path.';
+
   function renderContent(blocks, paths, title) {
     const warnings = [];
     const { roots, children } = buildTree(blocks);
@@ -648,12 +817,12 @@
     // depth is a character-column indent, not a fixed 2-space nesting level.
     // Ordered-list markers (such as "1. " and "10. ") need wider child indents.
     function siblings(entries, depth, recursionDepth = 0, parentIsList = false) {
-      if (recursionDepth > 60) { warnings.push('內容巢狀超過 60 層，已停止深入。'); return ''; }
+      if (recursionDepth > 60) { warnings.push('Content is nested more than 60 levels deep; deeper levels were skipped.'); return ''; }
       let result = '';
       let prev = null;
       let number = 0;
       for (const entry of entries) {
-        if (visited.has(entry.id)) { warnings.push('偵測到重複或循環區塊，已略過重複項目。'); continue; }
+        if (visited.has(entry.id)) { warnings.push('Duplicate or cyclic blocks were found and skipped.'); continue; }
         visited.add(entry.id);
         if (entry.type === 'numbered_list') number++;
         else number = 0;
@@ -697,10 +866,10 @@
           childDepth = prefix.length; break;
         }
         case 'toggle':
-          line = `**▸ ${own || '收合區塊'}**`;
+          line = `**▸ ${own || t('toggle')}**`;
           if (entry.collapsed && !descendants.length) {
-            warnings.push(`收合區塊「${own.slice(0, 45)}」的子內容未展開，可能無法取得。`);
-            line += '\n\n> [!WARNING] 此區塊在匯出時為收合狀態，子內容可能未包含。';
+            warnings.push(`The collapsed toggle "${own.slice(0, 45)}" was not expanded; its contents may be missing.`);
+            line += `\n\n${t('mdCollapsedToggle')}`;
           }
           break;
         case 'quote': line = own.split('\n').map(x => `> ${x}`).join('\n'); break;
@@ -718,23 +887,23 @@
           if (info.isMermaid) {
             if (source.trim()) {
               line = fencedCode(source, 'mermaid');
-              if (!looksLikeMermaid(source)) warnings.push('一個 Mermaid 原始碼未符合常見的圖表開頭語法，已原樣保留。');
+              if (!looksLikeMermaid(source)) warnings.push('A Mermaid source does not start with a known diagram keyword; it was kept as is.');
             } else if (paths.get(entry.id)) {
-              line = `![Mermaid 流程圖](${paths.get(entry.id)})`;
-              warnings.push('一個 Mermaid 區塊只能從頁面取得 SVG 預覽，無法取得可編輯的 Mermaid 原始碼。');
+              line = `![${t('mermaidDiagram')}](${paths.get(entry.id)})`;
+              warnings.push('A Mermaid block only has an SVG preview; its editable source is unavailable.');
             } else if (info.svg) {
               // The asset path is assigned after the preflight stage.
-              line = '> [!NOTE] Mermaid 圖表將以 SVG 保留。';
-              warnings.push('一個 Mermaid 區塊只能從頁面取得 SVG 預覽，無法取得可編輯的 Mermaid 原始碼。');
+              line = t('mdMermaidAsSvg');
+              warnings.push('A Mermaid block only has an SVG preview; its editable source is unavailable.');
             } else {
-              warnings.push('一個 Mermaid 區塊的原始碼與預覽均未載入，無法匯出。');
-              line = '> [!WARNING] Mermaid 流程圖無法讀取，請回 Notion 改為 Code 或 Split 檢視後重試。';
+              warnings.push('A Mermaid block has neither a loaded source nor a preview.');
+              line = t('mdMermaidUnreadable');
             }
           } else if (source) {
             line = fencedCode(source, info.language);
           } else {
-            warnings.push('一個程式碼區塊沒有可讀取的原始碼，請回 Notion 確認。');
-            line = '> [!WARNING] 程式碼區塊無法讀取。';
+            warnings.push('A code block has no readable source.');
+            line = t('mdCodeUnreadable');
           }
           break;
         }
@@ -745,8 +914,8 @@
           line = ''; break;
         case 'image': {
           const path = paths.get(entry.id);
-          if (!path) { warnings.push('有一張圖片沒有成功建立檔案路徑。'); line = '> [!WARNING] 圖片遺失。'; }
-          else line = `![${escapeLinkLabelBrackets(escapeText(entry.image?.alt || '圖片'))}](${path})`;
+          if (!path) { warnings.push(MISSING_IMAGE_PATH_WARNING); line = t('mdImageMissing'); }
+          else line = `![${escapeLinkLabelBrackets(escapeText(entry.image?.alt || t('image')))}](${path})`;
           break;
         }
         case 'table': case 'simple_table': line = renderTable(entry, descendants, warnings); break;
@@ -756,59 +925,59 @@
         case 'bookmark': case 'link_preview': case 'link_to_page': case 'child_page': {
           const url = getLink(entry);
           const label = linkLabel(entry);
-          line = url ? `[${label || '頁面連結'}](${url})` : label;
+          line = url ? `[${label || t('pageLink')}](${url})` : label;
           break;
         }
         case 'child_database': case 'collection_view': case 'collection_view_page': {
-          warnings.push(`內嵌資料庫「${own.slice(0, 45) || '未命名'}」的資料列不在單頁匯出範圍。`);
+          warnings.push(`Rows of the linked database "${own.slice(0, 45) || 'Untitled'}" are outside the single-page export.`);
           const url = entry.databaseUrl || '';
           const label = databaseLabel(entry);
-          line = `> [!NOTE] 內嵌資料庫：${url ? `[${label}](${url})` : label}（未匯出資料列）`;
+          line = t('mdLinkedDatabase', { link: url ? `[${label}](${url})` : label });
           break;
         }
         case 'embed': {
           const path = paths.get(entry.id);
           if (path) {
-            line = `![嵌入的 Mermaid 圖表](${path})`;
-            warnings.push('嵌入 Mermaid 圖表僅保存 SVG 預覽，未包含原始碼。');
+            line = `![${t('embeddedMermaidDiagram')}](${path})`;
+            warnings.push('An embedded Mermaid diagram was saved as an SVG preview without its source.');
           } else if (entry.diagram) {
-            line = '> [!NOTE] Mermaid 圖表將以 SVG 保留。';
-            warnings.push('嵌入 Mermaid 圖表僅保存 SVG 預覽，未包含原始碼。');
+            line = t('mdMermaidAsSvg');
+            warnings.push('An embedded Mermaid diagram was saved as an SVG preview without its source.');
           } else {
             const url = getLink(entry);
-            warnings.push('embed 區塊只保留來源連結，未下載外部嵌入內容。');
-            line = url ? `[${linkLabel(entry) || type}](${url})` : '> [!NOTE] 嵌入內容未下載，請參考 Notion 原頁。';
+            warnings.push('An embed block keeps only its source link; the embedded content was not downloaded.');
+            line = url ? `[${linkLabel(entry) || type}](${url})` : t('mdEmbedNotDownloaded');
           }
           break;
         }
         case 'mermaid_preview': {
           const path = paths.get(entry.id);
           if (path) {
-            line = `![Mermaid 流程圖](${path})`;
-            warnings.push('偵測到不在標準 Code Block 中的 Mermaid 預覽，已保存 SVG；無法保證原始碼可讀。');
+            line = `![${t('mermaidDiagram')}](${path})`;
+            warnings.push('A Mermaid preview outside a code block was saved as SVG; its source may be unavailable.');
           } else {
-            line = '> [!WARNING] 已偵測 Mermaid 預覽，但無法保存 SVG。';
-            warnings.push('偵測到不在標準 Code Block 中的 Mermaid 預覽，SVG 未保存。');
+            line = t('mdMermaidPreviewNotSaved');
+            warnings.push('A Mermaid preview outside a code block could not be saved as SVG.');
           }
           break;
         }
         case 'file': case 'pdf': case 'audio': case 'video': {
           const url = getLink(entry);
-          warnings.push(`${type} 區塊只保留來源連結，未下載其附件。`);
-          line = url ? `[${linkLabel(entry) || type}](${url})` : `> [!NOTE] ${type} 內容未下載，請參考 Notion 原頁。`;
+          warnings.push(`A ${type} block keeps only its source link; the attachment was not downloaded.`);
+          line = url ? `[${linkLabel(entry) || type}](${url})` : t('mdMediaNotDownloaded', { type });
           break;
         }
         case 'equation': line = own ? `$$\n${entry.own.textContent.trim()}\n$$` : ''; break;
         case 'table_of_contents': case 'breadcrumb': line = ''; break;
         case 'column': case 'column_list':
-          warnings.push('多欄版面已按 DOM 區塊順序攤平成單欄。'); break;
+          warnings.push('A multi-column layout was flattened into a single column in DOM order.'); break;
         case 'synced_block': break;
         case 'page':
           line = own ? `**${own}**` : '';
           break;
         default: {
-          warnings.push(`無法識別的 Notion 區塊類型：${type}，已保留缺失標記。`);
-          line = `> [!WARNING] 未支援的 Notion 區塊（${escapeText(type)}）：${own.slice(0, 100)}`;
+          warnings.push(`Unrecognized Notion block type: ${type}; a placeholder was kept.`);
+          line = t('mdUnsupportedBlock', { type: escapeText(type), text: own.slice(0, 100) });
         }
       }
       // Table rows are emitted inside renderTable, not as duplicated sections.
@@ -825,7 +994,7 @@
         !['table_row', 'simple_table_row'].includes(block.type) &&
         !['collection_view', 'collection_view_page', 'child_database', 'button'].includes(
           blocks.find(parent => parent.id === block.parentId)?.type));
-      if (skipped.length) warnings.push(`有 ${skipped.length} 個區塊未能建立可靠的父子順序。`);
+      if (skipped.length) warnings.push(`${skipped.length} block(s) have no reliable parent order.`);
     }
     const md = `# ${escapeText(title)}\n\n${body}`.trimEnd() + '\n';
     return { markdown: md, warnings: [...new Set(warnings)] };
@@ -857,10 +1026,10 @@
   async function requestImage(url) {
     if (url.startsWith('blob:') || url.startsWith('data:image/')) {
       const response = await fetch(url);
-      if (!response.ok) throw new Error(`讀取圖片失敗：HTTP ${response.status}`);
+      if (!response.ok) throw new Error(t('errorImageHttp', { status: response.status }));
       return { bytes: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get('content-type') || '' };
     }
-    if (typeof GM_xmlhttpRequest !== 'function') throw new Error('Userscript 管理器未提供 GM_xmlhttpRequest 權限。');
+    if (typeof GM_xmlhttpRequest !== 'function') throw new Error(t('errorNoXhr'));
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET', url, responseType: 'arraybuffer', timeout: LIMITS.imageTimeoutMs,
@@ -869,16 +1038,16 @@
             reject(new Error(`HTTP ${response.status}`)); return;
           }
           if (!(response.response instanceof ArrayBuffer)) {
-            reject(new Error('下載資料不是 ArrayBuffer')); return;
+            reject(new Error(t('errorNotArrayBuffer'))); return;
           }
           resolve({
             bytes: new Uint8Array(response.response),
             contentType: parseHeader(response.responseHeaders, 'content-type'),
           });
         },
-        ontimeout: () => reject(new Error('連線逾時')),
-        onerror: () => reject(new Error('網路或權限錯誤（請檢查腳本管理器的網域許可）')),
-        onabort: () => reject(new Error('圖片下載被取消')),
+        ontimeout: () => reject(new Error(t('errorTimeout'))),
+        onerror: () => reject(new Error(t('errorNetwork'))),
+        onabort: () => reject(new Error(t('errorAborted'))),
       });
     });
   }
@@ -921,12 +1090,12 @@
     // Normalize the root default namespace. Some HTML serializers append an
     // additional XHTML namespace even if an SVG namespace is already present.
     const openTagEnd = serialized.indexOf('>');
-    if (!serialized.startsWith('<svg') || openTagEnd < 0) throw new Error('Mermaid SVG 內容無法序列化');
+    if (!serialized.startsWith('<svg') || openTagEnd < 0) throw new Error(t('errorSvg'));
     const rootTag = serialized.slice(0, openTagEnd)
       .replace(/\sxmlns="[^"]*"/g, '')
       .replace(/^<svg\b/, '<svg xmlns="http://www.w3.org/2000/svg"');
     const content = rootTag + serialized.slice(openTagEnd);
-    if (content.length < 30) throw new Error('Mermaid SVG 內容無法序列化');
+    if (content.length < 30) throw new Error(t('errorSvg'));
     return textEncoder.encode(content);
   }
 
@@ -937,7 +1106,7 @@
        !block.code.source?.trim() && block.code.svg) ||
       (['embed', 'mermaid_preview'].includes(block.type) && block.diagram));
     const assets = blocks.filter(block => imageBlocks.includes(block) || mermaidVisuals.includes(block));
-    if (assets.length > LIMITS.images) throw new Error(`本頁圖片與流程圖總數超過 ${LIMITS.images} 個的保護上限，未建立 ZIP。`);
+    if (assets.length > LIMITS.images) throw new Error(t('errorTooManyImages', { limit: LIMITS.images }));
     const files = new Map();
     const paths = new Map();
     const duplicates = new Map();
@@ -945,7 +1114,7 @@
     for (const block of assets) {
       const index = assets.indexOf(block) + 1;
       const diagram = block.type !== 'image';
-      status(`處理${diagram ? '流程圖' : '圖片'} ${index}/${assets.length}…`);
+      status(t(diagram ? 'statusSavingDiagram' : 'statusSavingImage', { index, total: assets.length }));
       let image = null;
       if (diagram) {
         const svg = block.type === 'code' ? block.code.svg : block.diagram;
@@ -956,24 +1125,24 @@
         // Never silently replace a failed real image with a tiny data-URI placeholder.
         const remoteCandidates = rawCandidates.filter(isHttp);
         const candidates = remoteCandidates.length ? remoteCandidates : rawCandidates;
-        if (!candidates.length) throw new Error(`圖片 ${index}/${assets.length} 無法辨識來源。已取消匯出，不會產生缺圖 ZIP。`);
+        if (!candidates.length) throw new Error(t('errorImageNoSource', { index, total: assets.length }));
         let lastError = null;
         for (const url of candidates) {
           try {
             const result = await requestImage(url);
-            if (!result.bytes.length) throw new Error('圖片為空檔案');
-            if (result.bytes.length > LIMITS.imageBytes) throw new Error('單張圖片超過 32 MiB 上限');
+            if (!result.bytes.length) throw new Error(t('errorImageEmpty'));
+            if (result.bytes.length > LIMITS.imageBytes) throw new Error(t('errorImageTooLarge'));
             const ext = sniffImage(result.bytes, result.contentType);
-            if (!ext) throw new Error('回應內容不是可辨識的圖片格式');
+            if (!ext) throw new Error(t('errorNotImage'));
             image = { ...result, ext };
             break;
           } catch (error) { lastError = error; }
         }
-        if (!image) throw new Error(`圖片 ${index}/${assets.length} 下載失敗：${lastError?.message || '未知錯誤'}。已取消匯出。`);
+        if (!image) throw new Error(t('errorImageFailed', { index, total: assets.length, reason: lastError?.message || t('errorUnknown') }));
       }
-      if (image.bytes.length > LIMITS.imageBytes) throw new Error('單張圖片或流程圖超過 32 MiB 上限，未建立 ZIP。');
+      if (image.bytes.length > LIMITS.imageBytes) throw new Error(t('errorAssetTooLarge'));
       total += image.bytes.length;
-      if (total > LIMITS.archiveBytes) throw new Error('圖片總大小超過 240 MiB 的保護上限，未建立 ZIP。');
+      if (total > LIMITS.archiveBytes) throw new Error(t('errorArchiveTooLarge'));
       let checksum;
       if (globalThis.crypto?.subtle) {
         const hash = await globalThis.crypto.subtle.digest('SHA-256', image.bytes);
@@ -1014,17 +1183,17 @@
       name: textEncoder.encode(name),
       data: data instanceof Uint8Array ? data : new Uint8Array(data),
     }));
-    if (entries.length > 65535) throw new Error('ZIP 檔案數量超出 ZIP32 限制。');
+    if (entries.length > 65535) throw new Error(t('errorZipEntries'));
     let offset = 0;
     let centralSize = 0;
     for (const entry of entries) {
-      if (entry.data.length > 0xffffffff) throw new Error('檔案超過 ZIP32 4 GiB 限制。');
+      if (entry.data.length > 0xffffffff) throw new Error(t('errorZipEntryTooLarge'));
       entry.offset = offset;
       entry.crc = crc32(entry.data);
       offset += 30 + entry.name.length + entry.data.length;
       centralSize += 46 + entry.name.length;
     }
-    if (offset + centralSize + 22 > 0xffffffff) throw new Error('ZIP 超過 ZIP32 4 GiB 限制。');
+    if (offset + centralSize + 22 > 0xffffffff) throw new Error(t('errorZipTooLarge'));
     const output = new Uint8Array(offset + centralSize + 22);
     const view = new DataView(output.buffer);
     let position = 0;
@@ -1103,19 +1272,19 @@
     const addLimitation = (code, description, count) => {
       if (count > 0) limitations.push({ code, description, detectedBlocks: count });
     };
-    addLimitation('linked_database_rows', '內嵌資料庫的資料列未包含在單頁匯出範圍。',
+    addLimitation('linked_database_rows', 'Linked database rows are not included in the single-page export.',
       (kinds.collection_view || 0) + (kinds.collection_view_page || 0) + (kinds.child_database || 0));
-    addLimitation('flattened_columns', '多欄版面依區塊順序轉為單欄。',
+    addLimitation('flattened_columns', 'Multi-column layouts are flattened into a single column in block order.',
       (kinds.column || 0) + (kinds.column_list || 0));
-    addLimitation('collapsed_toggles', '收合中的區塊可能有尚未載入的子內容。',
+    addLimitation('collapsed_toggles', 'Collapsed toggles may contain children that were not loaded.',
       blocks.filter(item => item.type === 'toggle' && item.collapsed).length);
-    addLimitation('linked_media', '非圖片媒體附件只保留來源連結，未打包原檔。',
+    addLimitation('linked_media', 'Non-image media keep only their source links; the files are not packed.',
       (kinds.file || 0) + (kinds.pdf || 0) + (kinds.audio || 0) + (kinds.video || 0));
-    addLimitation('unreadable_tables', '部分表格無法可靠轉為 Markdown。',
+    addLimitation('unreadable_tables', 'Some tables could not be converted to Markdown reliably.',
       blocks.filter(item => ['table', 'simple_table'].includes(item.type) && !item.tableData?.length).length);
     return {
       exporterVersion: VERSION,
-      information: '本檔只有區塊類型與數量統計，不包含 Notion 文件文字、登入資訊或圖片網址。',
+      information: 'This file only contains block types and counts. It does not include page text, sign-in data or image URLs.',
       blockCount: blocks.length,
       blockTypes: Object.fromEntries(Object.entries(kinds).sort(([a], [b]) => a.localeCompare(b))),
       mermaid: {
@@ -1151,25 +1320,25 @@
   async function exportPage(status) {
     const title = pageTitle();
     const blocks = await scanCurrentPage(status);
-    status(`辨識 ${blocks.length} 個區塊，正在檢查…`);
+    status(t('statusChecking'));
     const preflight = renderContent(blocks, new Map(), title);
-    const preWarnings = preflight.warnings.filter(w => !w.includes('沒有成功建立檔案路徑'));
+    const preWarnings = preflight.warnings.filter(w => w !== MISSING_IMAGE_PATH_WARNING);
     if (preWarnings.length) {
       // Keep the confirmation short. Detailed limitations stay in the ZIP's
       // export-report.json; never surprise the user by omitting the warning.
-      if (!confirm('部分內容可能無法完整匯出，仍要繼續嗎？')) {
-        status('已取消'); return null;
+      if (!confirm(t('confirmPartial'))) {
+        status(t('statusCancelled')); return null;
       }
     }
     const unavailable = blocks.filter(block => block.type === 'code' && block.code?.isMermaid &&
       !block.code.source?.trim() && !block.code.svg);
-    if (unavailable.length) throw new Error(`有 ${unavailable.length} 個 Mermaid 流程圖沒有可取得的原始碼或 SVG 預覽。請在 Notion 切換為 Code 或 Split 檢視後再匯出，避免遺漏流程圖。`);
+    if (unavailable.length) throw new Error(t('errorMermaidUnavailable', { count: unavailable.length }));
     const { files, paths, imageCount, diagramCount } = await getImages(blocks, status);
     const { markdown, warnings } = renderContent(blocks, paths, title);
-    if (!markdown.trim()) throw new Error('Markdown 內容為空，已取消匯出。');
-    status('建立 ZIP…');
+    if (!markdown.trim()) throw new Error(t('errorEmptyMarkdown'));
+    status(t('statusZipping'));
     const base = safeFilename(title);
-    const warningCount = warnings.filter(w => !w.includes('沒有成功建立檔案路徑')).length;
+    const warningCount = warnings.filter(w => w !== MISSING_IMAGE_PATH_WARNING).length;
     const diagnostics = makeDiagnostics(blocks, imageCount, diagramCount, warningCount);
     const packageFiles = new Map([
       [`${base}.md`, textEncoder.encode(markdown)],
@@ -1178,7 +1347,7 @@
     ]);
     const bytes = makeZip(packageFiles);
     downloadBytes(bytes, `${base}.zip`);
-    status('已開始下載 ZIP');
+    status(t('statusDownloaded'));
     return { title, blocks: blocks.length, imageCount, diagramCount, warnings };
   }
 
@@ -1225,8 +1394,8 @@
         color:#fff; white-space:nowrap; background:rgba(34,40,49,.94);
         box-shadow:0 5px 14px rgba(15,23,32,.17); opacity:0; transform:translateY(4px);
         transition:opacity .15s ease,transform .15s ease; }
-      .wrap:not(.dragging):not(.has-toast) .action:hover ~ .tooltip,
-      .wrap:not(.dragging):not(.has-toast) .action:focus-visible ~ .tooltip { opacity:1; transform:translateY(0); }
+      .wrap:not(.dragging):not(.has-toast):not(.panel-open) .action:hover ~ .tooltip,
+      .wrap:not(.dragging):not(.has-toast):not(.panel-open) .action:focus-visible ~ .tooltip { opacity:1; transform:translateY(0); }
       .wrap.show-below .tooltip { top:calc(100% + 10px); bottom:auto; }
       .wrap.show-right .tooltip { left:0; right:auto; }
       .status { position:absolute; right:calc(100% + 12px); bottom:3px; min-height:42px;
@@ -1242,25 +1411,71 @@
       .status.show { opacity:1; transform:translateX(0); }
       .wrap.show-right .status { left:calc(100% + 12px); right:auto; }
       .wrap.show-below .status { top:0; bottom:auto; }
-      .wrap.dragging .status { opacity:0; }
+      .wrap.dragging .status, .wrap.panel-open .status { opacity:0; }
       .status.error { color:#a62f38; border-color:rgba(166,47,56,.22); }
+      /* Settings grow out of the button and return to it along the same path. */
+      .panel { position:absolute; top:0; right:calc(100% + 12px); width:248px; padding:6px;
+        border:1px solid rgba(0,0,0,.07); border-radius:16px;
+        background:rgba(255,255,255,.88); color:#1f2933;
+        box-shadow:0 18px 48px rgba(13,21,30,.18),0 3px 10px rgba(13,21,30,.08);
+        font:400 13px/1.4 system-ui, 'Microsoft JhengHei', sans-serif;
+        -webkit-backdrop-filter:blur(24px) saturate(180%); backdrop-filter:blur(24px) saturate(180%);
+        transform-origin:top right; opacity:0; transform:scale(.96); visibility:hidden; pointer-events:none;
+        transition:opacity .16s ease,transform .24s cubic-bezier(.2,.8,.2,1),visibility 0s linear .24s; }
+      .panel.open { opacity:1; transform:none; visibility:visible; pointer-events:auto;
+        transition:opacity .16s ease,transform .24s cubic-bezier(.2,.8,.2,1),visibility 0s; }
+      .wrap.show-right .panel { left:calc(100% + 12px); right:auto; transform-origin:top left; }
+      .wrap.panel-up .panel { top:auto; bottom:0; transform-origin:bottom right; }
+      .wrap.show-right.panel-up .panel { transform-origin:bottom left; }
+      .panel-header { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 4px 2px 10px; }
+      .panel-title { font-size:15px; font-weight:600; letter-spacing:-.01em; }
+      .close { display:grid; place-items:center; flex:none; width:28px; height:28px; padding:0;
+        border:0; border-radius:50%; color:inherit; background:rgba(0,0,0,.06); cursor:pointer;
+        transition:background-color .1s ease; }
+      .close:hover { background:rgba(0,0,0,.10); }
+      .close:active { background:rgba(0,0,0,.15); }
+      .close svg { width:10px; height:10px; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; fill:none; }
+      .section-label { padding:10px 10px 4px; font-size:11.5px; font-weight:600; letter-spacing:.01em; color:rgba(31,41,51,.62); }
+      .options { display:flex; flex-direction:column; gap:2px; }
+      .option { display:flex; align-items:center; gap:10px; width:100%; min-height:40px; padding:7px 10px;
+        border:0; border-radius:10px; color:inherit; background:transparent; font:inherit; text-align:left;
+        cursor:pointer; transition:background-color .1s ease; }
+      .option:hover { background:rgba(0,0,0,.05); }
+      .option:active { background:rgba(0,0,0,.09); }
+      .option-text { display:flex; flex:1; flex-direction:column; min-width:0; }
+      .option-hint { font-size:11.5px; color:rgba(31,41,51,.6); }
+      .option-hint:empty { display:none; }
+      .option-check { flex:none; width:16px; height:16px; fill:none; stroke:#2f7cf6;
+        stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; opacity:0; }
+      .option[aria-checked='true'] .option-check { opacity:1; }
+      .close:focus-visible, .option:focus-visible { outline:2px solid #56a6ff; outline-offset:1px; }
       @media (prefers-color-scheme: dark) {
         .status { background:rgba(37,41,47,.95); color:#f5f6f7; border-color:rgba(255,255,255,.10); }
         .status.error { color:#ffb4b8; border-color:rgba(255,180,184,.25); }
+        .panel { background:rgba(37,41,47,.88); color:#f5f6f7; border-color:rgba(255,255,255,.10); }
+        .close { background:rgba(255,255,255,.10); }
+        .close:hover { background:rgba(255,255,255,.16); }
+        .close:active { background:rgba(255,255,255,.22); }
+        .option:hover { background:rgba(255,255,255,.07); }
+        .option:active { background:rgba(255,255,255,.12); }
+        .section-label, .option-hint { color:rgba(245,246,247,.6); }
+        .option-check { stroke:#6aa8ff; }
       }
       @media (prefers-contrast: more) {
-        .action { border:2px solid #fff; } .status { border:2px solid currentColor; }
+        .action { border:2px solid #fff; } .status, .panel { border:2px solid currentColor; }
       }
       @media (prefers-reduced-transparency: reduce) {
-        .status { -webkit-backdrop-filter:none; backdrop-filter:none; background:#fff; }
+        .status, .panel { -webkit-backdrop-filter:none; backdrop-filter:none; background:#fff; }
       }
       @media (prefers-color-scheme: dark) and (prefers-reduced-transparency: reduce) {
-        .status { background:#25292f; color:#f5f6f7; }
+        .status, .panel { background:#25292f; color:#f5f6f7; }
       }
       @media (prefers-reduced-motion: reduce) {
         .action,.status,.tooltip { transition:none; }
         .action:hover,.action:active,.status,.tooltip { transform:none; }
         .spinner { animation:none; border-color:rgba(255,255,255,.55); border-top-color:#fff; }
+        .panel { transform:none; transition:opacity .16s ease,visibility 0s linear .16s; }
+        .panel.open { transition:opacity .16s ease,visibility 0s; }
       }
     `;
     const wrap = document.createElement('div');
@@ -1274,7 +1489,6 @@
     button.type = 'button';
     button.className = 'action';
     button.dataset.state = 'idle';
-    button.setAttribute('aria-label', '匯出目前 Notion 頁面為 Markdown 與圖片 ZIP');
     button.setAttribute('aria-busy', 'false');
     button.innerHTML = `
       <svg class="symbol symbol-download" aria-hidden="true" viewBox="0 0 24 24">
@@ -1286,8 +1500,31 @@
     `;
     const tooltip = document.createElement('div');
     tooltip.className = 'tooltip';
-    tooltip.textContent = '點擊匯出 · 拖曳移動';
     tooltip.setAttribute('aria-hidden', 'true');
+    const panel = document.createElement('div');
+    panel.className = 'panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-labelledby', 'n2z-settings-title');
+    panel.innerHTML = `
+      <div class="panel-header">
+        <span class="panel-title" id="n2z-settings-title"></span>
+        <button type="button" class="close">
+          <svg aria-hidden="true" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1 1 9"/></svg>
+        </button>
+      </div>
+      <div class="section-label" id="n2z-language-label"></div>
+      <div class="options" role="radiogroup" aria-labelledby="n2z-language-label">
+        ${LANGUAGE_PREFERENCES.map(value => `
+          <button type="button" class="option" role="radio" data-value="${value}"${value === 'auto' ? '' : ` lang="${value}"`}>
+            <span class="option-text"><span class="option-name"></span><span class="option-hint"></span></span>
+            <svg class="option-check" aria-hidden="true" viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg>
+          </button>`).join('')}
+      </div>
+    `;
+    const panelTitle = panel.querySelector('.panel-title');
+    const closeButton = panel.querySelector('.close');
+    const languageLabel = panel.querySelector('.section-label');
+    const options = [...panel.querySelectorAll('.option')];
     // Persist ratios rather than pixel positions so a saved location stays useful
     // after zooming or resizing the viewport (including mobile rotation).
     const POSITION_KEY = 'n2z.export-button-position.v1';
@@ -1311,24 +1548,7 @@
         return { x: value.x, y: value.y };
       } catch (_) { return null; }
     };
-    const readPosition = () => {
-      try {
-        if (typeof GM_getValue === 'function') {
-          const stored = parsePosition(GM_getValue(POSITION_KEY, null));
-          if (stored) return stored;
-        }
-      } catch (_) { /* Userscript storage may be unavailable in offline tests. */ }
-      try { return parsePosition(localStorage.getItem(POSITION_KEY)); }
-      catch (_) { return null; }
-    };
-    const writePosition = value => {
-      const raw = JSON.stringify(value);
-      try { if (typeof GM_setValue === 'function') GM_setValue(POSITION_KEY, raw); }
-      catch (_) { /* Fall back to localStorage below. */ }
-      try { localStorage.setItem(POSITION_KEY, raw); }
-      catch (_) { /* Private mode may prevent storage; dragging still works. */ }
-    };
-    let savedPosition = readPosition();
+    let savedPosition = readStored(POSITION_KEY, parsePosition);
     let currentPosition = { x: 0, y: 0 };
     const placeAt = (left, top) => {
       const rect = bounds();
@@ -1337,12 +1557,13 @@
       currentPosition = { x, y };
       host.style.left = `${x}px`;
       host.style.top = `${y}px`;
-      // Keep hover help and status messages on-screen after dragging.
+      // Keep hover help, status messages and settings on-screen after dragging.
       const roomLeft = x - EDGE_PADDING;
       const roomRight = rect.width - x - BUTTON_SIZE - EDGE_PADDING;
       const showRight = roomRight > roomLeft;
       wrap.classList.toggle('show-right', showRight);
       wrap.classList.toggle('show-below', y < 76);
+      wrap.classList.toggle('panel-up', y > rect.height / 2);
       wrap.style.setProperty('--n2z-status-room', `${Math.max(60, Math.floor((showRight ? roomRight : roomLeft) - 12))}px`);
     };
     const ratiosFromPosition = () => {
@@ -1396,7 +1617,7 @@
       wrap.classList.remove('dragging');
       if (moved) {
         savedPosition = ratiosFromPosition();
-        writePosition(savedPosition);
+        writeStored(POSITION_KEY, JSON.stringify(savedPosition));
         suppressClickUntil = performance.now() + 450;
         event.preventDefault();
       }
@@ -1408,6 +1629,9 @@
     button.addEventListener('lostpointercapture', finishDrag);
     window.addEventListener('resize', () => { if (!drag) positionFromPreference(); });
     positionFromPreference();
+    const updateButtonLabel = () => {
+      button.setAttribute('aria-label', t(button.dataset.state === 'error' ? 'retryLabel' : 'exportLabel'));
+    };
     let toastTimer = null;
     let stateTimer = null;
     const cancelTimers = () => {
@@ -1418,9 +1642,7 @@
       cancelTimers();
       button.dataset.state = state;
       button.setAttribute('aria-busy', String(state === 'working'));
-      button.setAttribute('aria-label', state === 'error'
-        ? '重試匯出目前 Notion 頁面'
-        : '匯出目前 Notion 頁面為 Markdown 與圖片 ZIP');
+      updateButtonLabel();
       note.textContent = message;
       note.classList.toggle('show', Boolean(message));
       note.classList.toggle('error', state === 'error');
@@ -1437,41 +1659,132 @@
         }
       }
     };
-    const friendlyStatus = (message) => {
-      if (/^掃描正文/.test(message)) return '正在讀取頁面…';
-      if (/^辨識/.test(message)) return '正在檢查內容…';
-      if (/^處理(圖片|流程圖)/.test(message)) return message.replace(/^處理/, '儲存');
-      if (/^建立 ZIP/.test(message)) return '正在打包 ZIP…';
-      return String(message).replace(/\s+/g, ' ').slice(0, 130);
+    const compactStatus = message => String(message).replace(/\s+/g, ' ').slice(0, 130);
+    let panelOpen = false;
+    const renderPanel = () => {
+      panelTitle.textContent = t('settings');
+      closeButton.setAttribute('aria-label', t('close'));
+      languageLabel.textContent = t('language');
+      for (const option of options) {
+        const value = option.dataset.value;
+        const selected = value === languagePreference;
+        option.querySelector('.option-name').textContent = value === 'auto' ? t('languageAuto') : LANGUAGE_NAMES[value];
+        option.querySelector('.option-hint').textContent = value === 'auto'
+          ? t('languageAutoHint', { language: LANGUAGE_NAMES[browserLanguage()] })
+          : '';
+        option.setAttribute('aria-checked', String(selected));
+        option.tabIndex = selected ? 0 : -1;
+      }
     };
+    const closeOnOutsidePointer = event => {
+      if (!event.composedPath().includes(host)) closePanel(false);
+    };
+    const closeOnEscape = event => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      closePanel(true);
+    };
+    const openPanel = () => {
+      if (running || panelOpen) return;
+      panelOpen = true;
+      renderPanel();
+      wrap.classList.add('panel-open');
+      panel.classList.add('open');
+      document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.addEventListener('keydown', closeOnEscape, true);
+      options.find(option => option.tabIndex === 0)?.focus({ preventScroll: true });
+    };
+    const closePanel = restoreFocus => {
+      if (!panelOpen) return;
+      panelOpen = false;
+      wrap.classList.remove('panel-open');
+      panel.classList.remove('open');
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+      if (restoreFocus) button.focus({ preventScroll: true });
+    };
+    let menuCommandId = null;
+    const registerMenuCommand = () => {
+      if (typeof GM_registerMenuCommand !== 'function') return;
+      try {
+        if (menuCommandId !== null) {
+          // Without unregister support, keep the first label rather than adding duplicates.
+          if (typeof GM_unregisterMenuCommand !== 'function' || menuCommandId === undefined) return;
+          GM_unregisterMenuCommand(menuCommandId);
+        }
+        menuCommandId = GM_registerMenuCommand(t('settings'), openPanel);
+      } catch (_) { /* The menu is optional; right-click still opens settings. */ }
+    };
+    const applyLanguage = () => {
+      language = resolveLanguage(languagePreference);
+      wrap.lang = language;
+      tooltip.textContent = t('tooltip');
+      updateButtonLabel();
+      renderPanel();
+      registerMenuCommand();
+    };
+    const selectLanguage = value => {
+      if (value === languagePreference) return;
+      languagePreference = value;
+      writeStored(LANGUAGE_KEY, value);
+      applyLanguage();
+    };
+    options.forEach((option, index) => {
+      option.addEventListener('click', () => {
+        selectLanguage(option.dataset.value);
+        option.focus({ preventScroll: true });
+      });
+      option.addEventListener('keydown', event => {
+        const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        const next = options[(index + step + options.length) % options.length];
+        selectLanguage(next.dataset.value);
+        next.focus({ preventScroll: true });
+      });
+    });
+    closeButton.addEventListener('click', () => closePanel(true));
+    // Keep Notion's own shortcuts from reacting to keys typed in the panel.
+    panel.addEventListener('keydown', event => event.stopPropagation());
+    button.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      if (panelOpen) closePanel(true);
+      else openPanel();
+    });
+    window.addEventListener('languagechange', applyLanguage);
     button.addEventListener('click', async event => {
       // Browsers can dispatch a click immediately after a pointer drag.
       if (event.detail > 0 && performance.now() < suppressClickUntil) {
         event.preventDefault();
         return;
       }
+      if (panelOpen) {
+        closePanel(true);
+        return;
+      }
       if (running) return;
       running = true;
       button.disabled = true;
-      setState('working', '正在準備匯出…');
+      setState('working', t('statusPreparing'));
       try {
         const result = await exportPage(message => {
-          const shortMessage = friendlyStatus(message);
+          const shortMessage = compactStatus(message);
           // Avoid repeating identical live-region announcements while scanning.
           if (note.textContent !== shortMessage) setState('working', shortMessage);
         });
-        if (result) setState('success', 'ZIP 已開始下載', 3100);
-        else setState('idle', '已取消', 1800);
+        if (result) setState('success', t('statusDownloaded'), 3100);
+        else setState('idle', t('statusCancelled'), 1800);
       } catch (error) {
-        console.error('[Notion MD ZIP]', error);
-        const message = String(error?.message || '未知錯誤').replace(/\s+/g, ' ').slice(0, 170);
-        setState('error', `匯出失敗：${message}`);
+        console.error('[notion2md]', error);
+        const message = String(error?.message || t('errorUnknown')).replace(/\s+/g, ' ').slice(0, 170);
+        setState('error', t('statusFailed', { message }));
       } finally {
         running = false;
         button.disabled = false;
       }
     });
-    wrap.append(note, button, tooltip);
+    applyLanguage();
+    wrap.append(note, button, tooltip, panel);
     shadow.append(style, wrap);
     document.body.appendChild(host);
   }
