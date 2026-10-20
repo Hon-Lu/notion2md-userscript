@@ -1,42 +1,52 @@
 # notion2md-userscript
 
-將目前開啟的 Notion 頁面正文匯出為 Markdown，並與圖片一起打包成 ZIP。轉換完全在瀏覽器本機進行，不呼叫 AI、第三方轉檔服務或 Notion 內部 API。
+**English** | [繁體中文](README.zh-TW.md)
 
-## 安裝
+Export the current Notion page to Markdown and pack it with its images into a ZIP. Everything runs locally in your browser: no AI, no third-party conversion service, no Notion internal API.
 
-1. 安裝任一支援 `GM_xmlhttpRequest` 的 Userscript 管理器，例如 [Tampermonkey](https://www.tampermonkey.net/)、[Violentmonkey](https://violentmonkey.github.io/)。
-2. 開啟 [`notion2md.user.js`](https://github.com/Hon-Lu/notion2md-userscript/releases/latest/download/notion2md.user.js)，依管理器提示安裝。之後管理器會依 `@updateURL` 自動檢查更新。
-3. 重新整理 Notion 頁面。
+## Installation
 
-## 使用
+1. Install a userscript manager that supports `GM_xmlhttpRequest`, such as [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/).
+2. Open [`notion2md.user.js`](https://github.com/Hon-Lu/notion2md-userscript/releases/latest/download/notion2md.user.js) and install it when your manager prompts you. The manager checks for updates automatically through `@updateURL`.
+3. Reload your Notion page.
 
-- 頁面右側會出現一顆圓形下載按鈕，**點擊**即開始匯出。
-- **按住拖曳**可移動按鈕，位置會自動記住。
-- 若偵測到可能無法完整轉換的內容，會先詢問是否繼續。
+## Usage
 
-## 輸出格式
+- A round download button appears on the right side of the page. **Click** it to export.
+- **Drag** the button to move it. Its position is remembered.
+- If some content may not convert completely, you are asked before the export continues.
+
+## Settings
+
+Right-click the button, or choose **Settings** from your userscript manager's menu.
+
+- **Language**: by default the interface follows your browser. Chinese browsers (Traditional or Simplified) get Traditional Chinese; every other language gets English. You can also pick English or 繁體中文 directly.
+- The language also applies to the notes and fallback text written into the exported Markdown.
+
+## Output
 
 ```text
-頁面標題.zip
-├── 頁面標題.md
+Page title.zip
+├── Page title.md
 ├── export-report.json
 └── images/
     ├── 001.png
     └── 002.svg
 ```
 
-`.md` 以相對路徑引用圖片（例如 `![](images/001.png)`），解壓縮後請保留 `images/` 的相對位置。`export-report.json` 記錄匯出統計與已知限制，不含正文或 URL。
+The `.md` file links images by relative path (for example `![](images/001.png)`), so keep the `images/` folder next to it after unzipping. `export-report.json` records export statistics and known limitations; it contains no page text or URLs.
 
-## 已知限制
+## Known limitations
 
-- 只匯出目前頁面正文；不含頁首屬性，不展開子頁面或內嵌資料庫的資料列。
-- 多欄版面依 DOM 順序轉為單欄；外部嵌入（如 Figma）只保留連結。
-- Mermaid 能讀到原始碼時輸出 `mermaid` 區塊，否則嘗試打包 SVG 預覽。
-- 任一圖片下載失敗即中止匯出，不會產生缺圖的 ZIP。
-- 圖片上限 150 個、單檔 32 MiB、總計 240 MiB。
-- 依賴 Notion 網頁的 DOM 結構，Notion 改版時可能需要更新辨識規則。
+- Only the body of the current page is exported. Page properties, sub-pages and the rows of linked databases are not included.
+- Multi-column layouts are flattened into one column in DOM order. External embeds (such as Figma) keep only their links.
+- Mermaid diagrams are exported as `mermaid` code blocks when the source is readable; otherwise their SVG preview is packed instead.
+- If any image fails to download, the export stops. No ZIP with missing images is created.
+- Up to 150 images, 32 MiB per file and 240 MiB in total.
+- The script depends on Notion's web DOM. A Notion redesign may require updated detection rules.
 
-## 權限說明
+## Permissions
 
-- `GM_xmlhttpRequest` 與 `@connect *`：僅用於以 GET 下載頁面中已出現的圖片。
-- `GM_getValue`／`GM_setValue`：僅儲存按鈕位置。
+- `GM_xmlhttpRequest` and `@connect *`: only used to download, with GET requests, images already shown on the page.
+- `GM_getValue` / `GM_setValue`: only store the button position and the language setting.
+- `GM_registerMenuCommand` / `GM_unregisterMenuCommand`: add the **Settings** entry to your userscript manager's menu.
