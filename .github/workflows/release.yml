@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          script_version=$(sed -n 's|^// @version[[:space:]]*||p' notion2md.user.js)
+          const_version=$(sed -n "s|^  const VERSION = '\(.*\)';|\1|p" notion2md.user.js)
+          if [ "$script_version" != "$version" ] || [ "$const_version" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME 與腳本版本不符（@version=$script_version, VERSION=$const_version）"
+            exit 1
+          fi
+
+      - name: Build release notes
+        run: |
+          prev_tag=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          if [ -n "$prev_tag" ]; then
+            range="$prev_tag..$GITHUB_REF_NAME"
+          else
+            range="$GITHUB_REF_NAME"
+          fi
+          {
+            echo "## Commits"
+            echo
+            git log --no-merges --format='- %s (%h)' "$range"
+            if [ -n "$prev_tag" ]; then
+              echo
+              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$prev_tag...$GITHUB_REF_NAME"
+            fi
+          } > release-notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" notion2md.user.js \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag
